@@ -570,6 +570,7 @@ def get_ef01_context(
         row.get("context")
         or row.get("project_context")
         or row.get("context_payload")
+        or row.get("source_payload")
     )
 
     if not isinstance(context, dict):
