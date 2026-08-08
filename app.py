@@ -56,6 +56,48 @@ def env_bool(name: str, default: bool = False) -> bool:
     }
 
 
+def google_model_registry(run_mode: str) -> dict[str, str]:
+    """Return overridable Google model IDs for the EEF pipeline."""
+
+    mode = str(run_mode or "TEST").strip().upper()
+    production = mode == "PRODUCTION"
+
+    return {
+        "lyrics": os.getenv(
+            "GEMINI_LYRICS_MODEL_PRODUCTION"
+            if production
+            else "GEMINI_LYRICS_MODEL_TEST",
+            "gemini-3.5-flash"
+            if production
+            else "gemini-3.5-flash-lite",
+        ),
+        "music": os.getenv(
+            "LYRIA_MODEL_PRODUCTION"
+            if production
+            else "LYRIA_MODEL_TEST",
+            "lyria-3-pro-preview"
+            if production
+            else "lyria-3-clip-preview",
+        ),
+        "image": os.getenv(
+            "IMAGE_MODEL_PRODUCTION"
+            if production
+            else "IMAGE_MODEL_TEST",
+            "gemini-3-pro-image"
+            if production
+            else "gemini-3.1-flash-lite-image",
+        ),
+        "video": os.getenv(
+            "VIDEO_MODEL_PRODUCTION"
+            if production
+            else "VIDEO_MODEL_TEST",
+            "veo-3.1-generate-preview"
+            if production
+            else "veo-3.1-lite-generate-preview",
+        ),
+    }
+
+
 def first_row(value: Any) -> Any:
     """
     Supabase RPC가 단일 행을 배열로 반환하는 경우
@@ -712,96 +754,80 @@ def build_lyrics_prompt(
     )
 
 
-def extract_openai_output_text(
+def extract_gemini_output_text(
     response_payload: dict[str, Any],
 ) -> str:
-    if response_payload.get("status") == "incomplete":
-        reason = (
-            response_payload.get("incomplete_details")
-            or {}
-        ).get("reason")
+    prompt_feedback = response_payload.get("promptFeedback") or {}
+    if prompt_feedback.get("blockReason"):
         raise RuntimeError(
-            "OpenAI response was incomplete: "
-            f"{reason or 'unknown reason'}"
+            "Gemini blocked lyrics prompt: "
+            f"{prompt_feedback.get('blockReason')}"
         )
 
-    for item in response_payload.get("output") or []:
-        if item.get("type") != "message":
-            continue
-
-        for content in item.get("content") or []:
-            if content.get("type") == "refusal":
-                raise RuntimeError(
-                    "OpenAI refused lyrics generation: "
-                    f"{content.get('refusal', '')[:500]}"
-                )
-
-            if content.get("type") == "output_text":
-                output_text = content.get("text")
-
-                if output_text:
-                    return output_text
+    for candidate in response_payload.get("candidates") or []:
+        for part in (candidate.get("content") or {}).get("parts") or []:
+            output_text = part.get("text")
+            if output_text:
+                return output_text
 
     raise RuntimeError(
-        "OpenAI response did not contain output_text"
+        "Gemini response did not contain output text"
     )
 
 
 def generate_lyrics(
     context: dict[str, Any],
+    run_mode: str = "TEST",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    api_key = os.getenv("OPENAI_API_KEY", "")
+    api_key = (
+        os.getenv("GEMINI_API_KEY", "")
+        or os.getenv("GOOGLE_API_KEY", "")
+    )
 
     if not api_key:
         raise RuntimeError(
-            "OPENAI_API_KEY is required for EF-02"
+            "GEMINI_API_KEY or GOOGLE_API_KEY is required for EF-02"
         )
 
-    model = os.getenv(
-        "OPENAI_LYRICS_MODEL",
-        "gpt-5.4-mini",
-    )
+    model = google_model_registry(run_mode)["lyrics"]
 
     response = requests.post(
-        "https://api.openai.com/v1/responses",
+        "https://generativelanguage.googleapis.com/"
+        f"v1beta/models/{model}:generateContent",
         headers={
-            "Authorization": f"Bearer {api_key}",
+            "x-goog-api-key": api_key,
             "Content-Type": "application/json",
         },
         json={
-            "model": model,
-            "input": [
-                {
-                    "role": "developer",
-                    "content": (
+            "systemInstruction": {
+                "parts": [{
+                    "text": (
                         "당신은 한국 대중음악 전문 작사가입니다. "
                         "사용자가 제공한 컨텍스트를 정확히 따르고, "
                         "정의된 JSON 스키마에 맞는 결과만 생성합니다."
-                    ),
-                },
+                    )
+                }]
+            },
+            "contents": [
                 {
                     "role": "user",
-                    "content": build_lyrics_prompt(context),
+                    "parts": [{
+                        "text": build_lyrics_prompt(context)
+                    }],
                 },
             ],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "ef02_lyrics",
-                    "strict": True,
-                    "schema": lyrics_json_schema(),
-                },
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": lyrics_json_schema(),
+                "maxOutputTokens": int(os.getenv(
+                    "GEMINI_LYRICS_MAX_OUTPUT_TOKENS",
+                    "8192",
+                )),
             },
-            "max_output_tokens": int(
-                os.getenv(
-                    "OPENAI_LYRICS_MAX_OUTPUT_TOKENS",
-                    "6000",
-                )
-            ),
         },
         timeout=int(
             os.getenv(
-                "OPENAI_TIMEOUT_SECONDS",
+                "GEMINI_TIMEOUT_SECONDS",
                 "180",
             )
         ),
@@ -809,13 +835,13 @@ def generate_lyrics(
 
     if not response.ok:
         raise RuntimeError(
-            "OpenAI Responses API failed "
+            "Gemini generateContent API failed "
             f"({response.status_code}): "
             f"{response.text[:1000]}"
         )
 
     response_payload = response.json()
-    output_text = extract_openai_output_text(
+    output_text = extract_gemini_output_text(
         response_payload
     )
 
@@ -823,13 +849,14 @@ def generate_lyrics(
         lyrics_result = json.loads(output_text)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            "OpenAI output was not valid JSON"
+            "Gemini output was not valid JSON"
         ) from exc
 
     return lyrics_result, {
-        "response_id": response_payload.get("id"),
-        "model": response_payload.get("model") or model,
-        "usage": response_payload.get("usage") or {},
+        "provider": "google",
+        "model": response_payload.get("modelVersion") or model,
+        "usage": response_payload.get("usageMetadata") or {},
+        "prompt_feedback": response_payload.get("promptFeedback") or {},
     }
 
 
@@ -914,7 +941,7 @@ def save_geef_project_lyrics(
         "module_run_id": job["module_run_id"],
         "source_payload": {
             "ef01_context": context,
-            "openai": generation_info,
+            "google_ai": generation_info,
         },
         "updated_at": (
             time.strftime(
@@ -994,7 +1021,10 @@ def run_ef02(
             )
 
         lyrics_result, generation_info = (
-            generate_lyrics(context)
+            generate_lyrics(
+                context,
+                run_mode=job.get("run_mode") or "TEST",
+            )
         )
         validate_lyrics_result(lyrics_result)
 
@@ -1143,6 +1173,11 @@ def health():
                 "EF-01",
                 "EF-02",
             ],
+            "ai_provider": "google",
+            "models": {
+                "TEST": google_model_registry("TEST"),
+                "PRODUCTION": google_model_registry("PRODUCTION"),
+            },
         }
     )
 
