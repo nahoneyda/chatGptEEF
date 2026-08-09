@@ -1,0 +1,33 @@
+import { Module } from '@nestjs/common';
+import { WorkflowModule } from '../workflow/workflow.module';
+import { Ef01ContextModule } from '../../modules/ef01-context/module/ef01-context.module';
+import { Ef01ContextExecutor } from '../../modules/ef01-context/application/executors/ef01-context.executor';
+import { Ef02LyricsModule } from '../../modules/ef02-lyrics/module/ef02-lyrics.module';
+import { Ef02LyricsExecutor } from '../../modules/ef02-lyrics/application/executors/ef02-lyrics.executor';
+import { Ef03MusicSpecModule } from '../../modules/ef03-music-spec/module/ef03-music-spec.module';
+import { Ef03MusicSpecExecutor } from '../../modules/ef03-music-spec/application/executors/ef03-music-spec.executor';
+import { Ef04CompositionPlanModule } from '../../modules/ef04-composition-plan/module/ef04-composition-plan.module';
+import { Ef04CompositionPlanExecutor } from '../../modules/ef04-composition-plan/application/executors/ef04-composition-plan.executor';
+import { Ef05ProviderPackageModule } from '../../modules/ef05-provider-package/module/ef05-provider-package.module';
+import { Ef05ProviderPackageExecutor } from '../../modules/ef05-provider-package/application/executors/ef05-provider-package.executor';
+import { Ef06AudioGenerationModule } from '../../modules/ef06-audio-generation/module/ef06-audio-generation.module';
+import { Ef06AudioGenerationExecutor } from '../../modules/ef06-audio-generation/application/executors/ef06-audio-generation.executor';
+import { EF01_EXECUTOR,EF02_EXECUTOR,EF03_EXECUTOR,EF04_EXECUTOR,EF05_EXECUTOR,EF06_EXECUTOR,ExecutorRegistry } from './executor.registry';
+import { WorkerService } from './worker.service';
+import { WorkerController } from './worker.controller';
+@Module({
+  imports:[WorkflowModule,Ef01ContextModule,Ef02LyricsModule,Ef03MusicSpecModule,Ef04CompositionPlanModule,Ef05ProviderPackageModule,Ef06AudioGenerationModule],
+  controllers:[WorkerController],
+  providers:[
+    Ef01ContextExecutor,Ef02LyricsExecutor,Ef03MusicSpecExecutor,Ef04CompositionPlanExecutor,Ef05ProviderPackageExecutor,Ef06AudioGenerationExecutor,
+    {provide:EF01_EXECUTOR,useExisting:Ef01ContextExecutor},
+    {provide:EF02_EXECUTOR,useExisting:Ef02LyricsExecutor},
+    {provide:EF03_EXECUTOR,useExisting:Ef03MusicSpecExecutor},
+    {provide:EF04_EXECUTOR,useExisting:Ef04CompositionPlanExecutor},
+    {provide:EF05_EXECUTOR,useExisting:Ef05ProviderPackageExecutor},
+    {provide:EF06_EXECUTOR,useExisting:Ef06AudioGenerationExecutor},
+    ExecutorRegistry,WorkerService,
+  ],
+  exports:[WorkerService,ExecutorRegistry],
+})
+export class WorkerModule{}
