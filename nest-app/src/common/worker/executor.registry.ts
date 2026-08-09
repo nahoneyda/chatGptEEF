@@ -71,5 +71,5 @@ export class ExecutorRegistry implements OnModuleInit {
 
   has(moduleCode: string): boolean {
     return this.executors.has(moduleCode);
-  }
+  }  
 }
